@@ -45,6 +45,8 @@ A table of results is output in Markdown format. You may want to tweak the actua
 
 The code uses 32-bit array indexing, and will not work with matrices larger than 32768x32768 without modification to avoid integer overflow.
 
+> Consider sharing your results as a [discussion](https://github.com/lawmurray/gpu-gemm/discussions). You can copy and paste the output table directly, as it is in GitHub compatible Markdown.
+
 
 ## Benchmarking
 
