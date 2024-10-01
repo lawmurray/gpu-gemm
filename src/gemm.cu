@@ -595,7 +595,7 @@ int main(int argc, char** argv) {
 
   /* table header */
   std::printf("|      M |      N |      K | cublas (ms) | custom (ms) | cublas (tflops) | custom (tflops) | trials |       err |\n");
-  std::printf("| -----: | -----: | -----: | ----------: | ----------: | --------------: | --------------: | -----: | :------+: |\n");
+  std::printf("| -----: | -----: | -----: | ----------: | ----------: | --------------: | --------------: | -----: | :-------: |\n");
 
   /* run tests and report */
   run_test.template operator()<2048,2048,2048,100,10>();
