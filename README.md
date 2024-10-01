@@ -65,7 +65,7 @@ Changing the numbers as desired. Once benchmarking is complete, unlock them agai
 
 ## Contributing
 
-Contributions are welcome. This is prototype not production code, so a contributions should aim at improving understanding of this particular computation. That might include:
+Contributions are welcome. This is prototype not production code, so most contributions would aim at improving understanding of matrix-matrix multiplication. That might include:
 
 * Running the code on your own system and reporting the results. The output of the program is a Markdown table that you can easily copy and paste into a [discussion](https://github.com/lawmurray/gpu-gemm/discussions).
 * Improving the performance of the code. Please send a [pull request](https://github.com/lawmurray/gpu-gemm/pulls), and perhaps consider writing a blog post or the like on the improvement.
