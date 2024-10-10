@@ -358,7 +358,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   /* level 1 tile size (global memory, thread block level) */
   constexpr int M1 = 256;
   constexpr int N1 = 128;
-  constexpr int K1 = K0;
+  constexpr int K1 = K0;  // must be K0
 
   /* level 2 tile size (shared memory, thread block level) */
   constexpr int M2 = 256;
@@ -368,7 +368,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   /* level 3 tile size (shared memory, warp level) */
   constexpr int M3 = 64;
   constexpr int N3 = 64;
-  constexpr int K3 = 8;
+  constexpr int K3 = K2;  // must be K2
 
   /* level 3 warp grid size */
   constexpr int M3_warps = M2/M3;
