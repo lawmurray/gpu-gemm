@@ -496,6 +496,32 @@ void gemm(float* __restrict__ A, float* __restrict__ B,
   gemm_kernel<M,N,K><<<grid,block>>>(A, B, C);
 }
 
+/**
+ * Cache flush kernel.
+ * 
+ * @tparam F Flush size.
+ * 
+ * @param f Vector.
+ */
+template<int F>
+__global__ void flush_kernel(float* f) {
+  f[threadIdx.x + blockIdx.x*blockDim.x] += 1.0f;
+}
+
+/**
+ * Cache flush.
+ * 
+ * @tparam F Flush size.
+ * 
+ * @param f Vector.
+ */
+template<int F>
+void flush(float* f) {
+  dim3 block(256);
+  dim3 grid(F/256);
+  flush_kernel<F><<<grid,block>>>(f);
+}
+
 int main(int argc, char** argv) {
   /* initialize cublas */
   cublasHandle_t handle;
@@ -508,17 +534,27 @@ int main(int argc, char** argv) {
   curandSetPseudoRandomGeneratorSeed(gen, seed);
 
   auto run_test = [&]<int M, int N, int K, int ntrials, int nwarmup>() {
+    /* number of floating point operations for TFLOPS numbers; each output
+     * has M*N elements, each computed from K multiplications and K - 1
+     * additions */
+    constexpr long flop = M*N*(2l*K - 1l);
+
+    /* cache flush size */
+    constexpr int F = 32*1024*1024;
+
     /* initialize matrices; the output matrices, C and D, are allocated with
      * managed memory to support problem sizes somewhat beyond the available
      * device memory, while ensuring that the input matrices, A and B, are
      * always on device, which is more important for performance */
-    float *A, *B, *C, *D;
+    float *A, *B, *C, *D, *f;
     cudaMalloc((void**)&A, M*K*sizeof(float));
     cudaMalloc((void**)&B, K*N*sizeof(float));
     cudaMallocManaged((void**)&C, M*N*sizeof(float));
     cudaMallocManaged((void**)&D, M*N*sizeof(float));
+    cudaMalloc((void**)&f, F*sizeof(float));
     curandGenerateUniform(gen, A, M*K);
     curandGenerateUniform(gen, B, K*N);
+    curandGenerateUniform(gen, f, F);
 
     /* initialize events */
     cudaEvent_t start1[ntrials], stop1[ntrials];
@@ -530,28 +566,36 @@ int main(int argc, char** argv) {
       cudaEventCreate(&stop2[trial]);
     }
 
-    /* number of floating point operations for TFLOPS numbers; each output
-     * has M*N elements, each computed from K multiplications and K - 1
-     * additions */
-    constexpr long flop = M*N*(2l*K - 1l);
-
-    /* benchmark */
+    /* initialize scalars */
     float scalar0 = 0.0f, scalar1 = 1.0f;
+
+    /* warm up */
     for (int trial = 0; trial < nwarmup; ++trial) {
+      cudaMemPrefetchAsync(C, M*N*sizeof(float), 0);
+      curandGenerateUniform(gen, C, M*N);  // clear output
+      flush<F>(f);  // flush L2 cache
       cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &scalar1, A, M,
           B, K, &scalar0, C, M);
+
+      cudaMemPrefetchAsync(D, M*N*sizeof(float), 0);
+      curandGenerateUniform(gen, D, M*N);  // clear output
+      flush<F>(f);  // flush L2 cache
       gemm<M,N,K>(A, B, D);
     }
+
+    /* benchmark */
     for (int trial = 0; trial < ntrials; ++trial) {
       cudaMemPrefetchAsync(C, M*N*sizeof(float), 0);
-      curandGenerateUniform(gen, C, M*N);  // clear, but also flush L2 cache
+      curandGenerateUniform(gen, C, M*N);  // clear output
+      flush<F>(f);  // flush L2 cache
       cudaEventRecord(start1[trial]);
       cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &scalar1, A, M,
           B, K, &scalar0, C, M);
       cudaEventRecord(stop1[trial]);
 
       cudaMemPrefetchAsync(D, M*N*sizeof(float), 0);
-      curandGenerateUniform(gen, D, M*N);  // clear, but also flush L2 cache
+      curandGenerateUniform(gen, D, M*N);  // clear output
+      flush<F>(f);  // flush L2 cache
       cudaEventRecord(start2[trial]);
       gemm<M,N,K>(A, B, D);
       cudaEventRecord(stop2[trial]);
