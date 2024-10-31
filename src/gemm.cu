@@ -230,7 +230,7 @@ union register_tile {
         /* when storing, write through so as not to evict useful data from
          * inputs from the L2 cache */
         for (int b = 0; b < 4; ++b) {
-          __stwt(&o.x4[i0 + i*RS + (j0 + j*(4*CS) + b)*(L1/4)], x4[i + (4*j + b)*(R/4)]);
+          __stwt(&o.x4[i0 + i*RS + (j0 + j*CS)*L1 + b*(L1/4)], x4[i + j*R + b*(R/4)]);
         }
       }
     }
@@ -455,7 +455,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
 
   /* write final result */
   global_tile<M1,N1,M0> C3(C0, b_i*M1 + row_id*M3, b_j*N1 + col_id*N3);
-  C4.store4(C3, i4, 4*j4);
+  C4.store4(C3, i4, j4);
 }
 
 /**
