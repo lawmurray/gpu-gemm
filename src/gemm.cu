@@ -443,13 +443,11 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     int next_k = (k2 + (nstages - 1))%(K1/K2);
     int next_stage = (k2 + (nstages - 1))%nstages;
 
-    global_tile<K2,N2,K0> next_B2(B1, next_k*K2, col_id*N3);
     shared_tile<N3,K3> next_BT3(BT_shared[col_id][next_stage]);
-    next_BT3.copy_transpose<nthreads/N3_warps>(next_B2, 0, 0, r_id);
+    next_BT3.copy_transpose<nthreads/N3_warps>(B1, next_k*K2, col_id*N3, r_id);
 
-    global_tile<M2,K2,M0> next_A2(A1, row_id*M3, next_k*K2);
     shared_tile<M3,K3> next_A3(A_shared[row_id][next_stage]);
-    next_A3.copy4<nthreads/M3_warps>(next_A2, 0, 0, c_id);
+    next_A3.copy4<nthreads/M3_warps>(A1, row_id*(M3/4), next_k*K2, c_id);
 
     asm("cp.async.commit_group;");
   }
