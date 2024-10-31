@@ -161,6 +161,41 @@ union shared_tile {
 };
 
 /**
+ * Vector tile in registers.
+ * 
+ * @tparam N Size.
+ * @tparam S Stride when loading from or storing to memory.
+ */
+template<int N, int S = 1>
+union register_vector {
+  /**
+   * Load from a shared memory tile.
+   */
+  template<int R1, int C1, int L1>
+  __device__ void load(const shared_tile<R1,C1,L1>& o, const int i0,
+      const int j0) {
+    for (int i = 0; i < N; ++i) {
+      x[i] = o.x[i0 + i*S + j0*L1];
+    }
+  }
+
+  /**
+   * Load from a shared memory tile.
+   */
+  template<int R1, int C1, int L1>
+  requires (N%4 == 0 && L1%4 == 0)
+  __device__ void load4(const shared_tile<R1,C1,L1>& o, const int i0,
+      const int j0) {
+    for (int i = 0; i < N/4; ++i) {
+      x4[i] = o.x4[i0 + i*S + j0*(L1/4)];
+    }
+  }
+
+  float x[N];
+  float4 x4[N/4];
+};
+
+/**
  * Matrix tile in registers.
  * 
  * @tparam R Number of rows.
@@ -170,33 +205,6 @@ union shared_tile {
  */
 template<int R, int C, int RS = 1, int CS = 1>
 union register_tile {
-  /**
-   * Load from a shared memory tile.
-   */
-  template<int R1, int C1, int L1>
-  __device__ void load(const shared_tile<R1,C1,L1>& o, const int i0,
-      const int j0) {
-    for (int j = 0; j < C; ++j) {
-      for (int i = 0; i < R; ++i) {
-        x[i + j*R] = o.x[i0 + i*RS + (j0 + j*CS)*L1];
-      }
-    }
-  }
-
-  /**
-   * Load from a shared memory tile.
-   */
-  template<int R1, int C1, int L1>
-  requires (R%4 == 0 && L1%4 == 0)
-  __device__ void load4(const shared_tile<R1,C1,L1>& o, const int i0,
-      const int j0) {
-    for (int j = 0; j < C; ++j) {
-      for (int i = 0; i < R/4; ++i) {
-        x4[i + j*(R/4)] = o.x4[i0 + i*RS + (j0 + j*CS)*(L1/4)];
-      }
-    }
-  }
-
   /**
    * Store to a global memory tile.
    */
@@ -229,41 +237,19 @@ union register_tile {
   }
 
   /**
-   * Multiply and add.
+   * Outer product of two vectors and add.
    * 
-   * @param A First argument.
-   * @param B Second argument.
+   * @param a First argument.
+   * @param b Second argument.
    * 
-   * Computes $AB$ and adds to this tile.
+   * Computes $ab^\top$ and adds to this tile.
    */
-  template<int K, int RS1, int CS1, int RS2, int CS2>
-  __device__ void mad(const register_tile<R,K,RS1,CS1>& A,
-      const register_tile<K,C,RS2,CS2>& B) {
-    for (int k = 0; k < K; ++k) {
-      for (int j = 0; j < C; ++j) {
-        for (int i = 0; i < R; ++i) {
-          x[i + j*R] += A.x[i + k*R]*B.x[k + j*K];
-        }
-      }
-    }
-  }
-
-  /**
-   * Multiply and add, with transpose of second argument.
-   * 
-   * @param A First argument.
-   * @param B Second argument.
-   * 
-   * Computes $AB^\top$ and adds to this tile.
-   */
-  template<int K, int RS1, int CS1, int RS2, int CS2>
-  __device__ void mad_transpose(const register_tile<R,K,RS1,CS1>& A,
-      const register_tile<C,K,RS2,CS2>& B) {
-    for (int k = 0; k < K; ++k) {
-      for (int j = 0; j < C; ++j) {
-        for (int i = 0; i < R; ++i) {
-          x[i + j*R] += A.x[i + k*R]*B.x[j + k*C];
-        }
+  template<int S1, int S2>
+  __device__ void add_outer(const register_vector<R,S1>& a,
+      const register_vector<C,S2>& b) {
+    for (int j = 0; j < C; ++j) {
+      for (int i = 0; i < R; ++i) {
+        x[i + j*R] += a.x[i]*b.x[j];
       }
     }
   }
@@ -413,8 +399,8 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   __shared__ float BT_shared[N3_warps][nstages][N3*K3];
 
   /* level 4 tiles */
-  register_tile<M4,K4,M4_threads> A4;
-  register_tile<N4,K4,N4_threads> BT4;
+  register_vector<M4,M4_threads> a4;
+  register_vector<N4,N4_threads> b4;
   register_tile<M4,N4,M4_threads,N4_threads> C4;
 
   /* level 4 offsets to first elements */
@@ -446,9 +432,9 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages]);
 
     for (int k4 = 0; k4 < K3/K4; ++k4) {
-      A4.load4(A3, i4, k4*K4);
-      BT4.load4(BT3, j4, k4*K4);
-      C4.mad_transpose(A4, BT4);
+      a4.load4(A3, i4, k4*K4);
+      b4.load4(BT3, j4, k4*K4);
+      C4.add_outer(a4, b4);
     }
 
     /* inlining the level 2 tiles here *does not* improve performance,
