@@ -399,8 +399,6 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   __shared__ float BT_shared[N3_warps][nstages][N3*K3];
 
   /* level 4 tiles */
-  register_vector<M4,M4_threads> a4;
-  register_vector<N4,N4_threads> b4;
   register_tile<M4,N4,M4_threads,N4_threads> C4;
 
   /* level 4 offsets to first elements */
@@ -430,6 +428,9 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
 
     shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages]);
     shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages]);
+
+    register_vector<M4,M4_threads> a4;
+    register_vector<N4,N4_threads> b4;
 
     for (int k4 = 0; k4 < K3/K4; ++k4) {
       a4.load4(A3, i4, k4*K4);
