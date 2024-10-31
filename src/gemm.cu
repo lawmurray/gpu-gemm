@@ -165,8 +165,10 @@ union shared_tile {
  * 
  * @tparam R Number of rows.
  * @tparam C Number of columns.
+ * @tparam RS Row stride when loading from or storing to memory.
+ * @tparam CS Column stride when loading from or storing to memory.
  */
-template<int R, int C>
+template<int R, int C, int RS = 1, int CS = 1>
 union register_tile {
   /**
    * Load from a shared memory tile.
@@ -176,7 +178,7 @@ union register_tile {
       const int j0) {
     for (int j = 0; j < C; ++j) {
       for (int i = 0; i < R; ++i) {
-        x[i + j*R] = o.x[i0 + i + (j0 + j)*L1];
+        x[i + j*R] = o.x[i0 + i*RS + (j0 + j*CS)*L1];
       }
     }
   }
@@ -190,7 +192,7 @@ union register_tile {
       const int j0) {
     for (int j = 0; j < C; ++j) {
       for (int i = 0; i < R/4; ++i) {
-        x4[i + j*(R/4)] = o.x4[i0 + i + (j0 + j)*(L1/4)];
+        x4[i + j*(R/4)] = o.x4[i0 + i*RS + (j0 + j*CS)*(L1/4)];
       }
     }
   }
@@ -203,7 +205,7 @@ union register_tile {
       const int j0) {
     for (int j = 0; j < C; ++j) {
       for (int i = 0; i < R; ++i) {
-        o.x[i0 + i + (j0 + j)*L1] = x[i + j*R];
+        o.x[i0 + i*RS + (j0 + j*CS)*L1] = x[i + j*R];
       }
     }
   }
@@ -215,11 +217,13 @@ union register_tile {
   requires (R%4 == 0 && L1%4 == 0)
   __device__ void store4(global_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
-    for (int j = 0; j < C; ++j) {
+    for (int j = 0; j < C/4; ++j) {
       for (int i = 0; i < R/4; ++i) {
         /* when storing, write through so as not to evict useful data from
-          * inputs from the L2 cache */
-        __stwt(&o.x4[i0 + i + (j0 + j)*(L1/4)], x4[i + j*(R/4)]);
+         * inputs from the L2 cache */
+        for (int b = 0; b < 4; ++b) {
+          __stwt(&o.x4[i0 + i*RS + (j0 + j*(4*CS) + b)*(L1/4)], x4[i + (4*j + b)*(R/4)]);
+        }
       }
     }
   }
@@ -232,9 +236,9 @@ union register_tile {
    * 
    * Computes $AB$ and adds to this tile.
    */
-  template<int K>
-  __device__ void mad(const register_tile<R,K>& A,
-      const register_tile<K,C>& B) {
+  template<int K, int RS1, int CS1, int RS2, int CS2>
+  __device__ void mad(const register_tile<R,K,RS1,CS1>& A,
+      const register_tile<K,C,RS2,CS2>& B) {
     for (int k = 0; k < K; ++k) {
       for (int j = 0; j < C; ++j) {
         for (int i = 0; i < R; ++i) {
@@ -252,9 +256,9 @@ union register_tile {
    * 
    * Computes $AB^\top$ and adds to this tile.
    */
-  template<int K>
-  __device__ void mad_transpose(const register_tile<R,K>& A,
-      const register_tile<C,K>& B) {
+  template<int K, int RS1, int CS1, int RS2, int CS2>
+  __device__ void mad_transpose(const register_tile<R,K,RS1,CS1>& A,
+      const register_tile<C,K,RS2,CS2>& B) {
     for (int k = 0; k < K; ++k) {
       for (int j = 0; j < C; ++j) {
         for (int i = 0; i < R; ++i) {
@@ -375,7 +379,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   constexpr int N3_warps = N2/N3;
 
   /* level 4 tile size (registers, thread level) */
-  constexpr int M4 = 4;
+  constexpr int M4 = 8;
   constexpr int N4 = 16;
   constexpr int K4 = 1;
 
@@ -403,14 +407,19 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   auto [b_i, b_j] = hilbert2<M0/M1,N0/N1>(b_id);
   global_tile<M1,K1,M0> A1(A0, b_i*M1, 0);
   global_tile<K1,N1,K0> B1(B0, 0, b_j*N1);
-  global_tile<M1,N1,M0> C1(C0, b_i*M1, b_j*N1);
 
   /* level 3 buffers (B is transposed) */
   __shared__ float A_shared[M3_warps][nstages][M3*K3];
   __shared__ float BT_shared[N3_warps][nstages][N3*K3];
 
   /* level 4 tiles */
-  register_tile<M4,N4> C4[N3/N4/N4_threads][M3/M4/M4_threads];
+  register_tile<M4,K4,M4_threads> A4;
+  register_tile<N4,K4,N4_threads> BT4;
+  register_tile<M4,N4,M4_threads,N4_threads> C4;
+
+  /* level 4 offsets to first elements */
+  const int i4 = t_id%M4_threads;
+  const int j4 = t_id/M4_threads;
 
   /* multiply */
   const int r_id = t_id + row_id*wsize;
@@ -428,26 +437,18 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     asm("cp.async.commit_group;");
   }
 
-  const int B_offset = t_id/M4_threads*N4;
-  const int A_offset = t_id%M4_threads*M4;
-
   for (int k2 = 0; k2 < K1/K2; ++k2) {
     asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
     asm("barrier.sync.aligned %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
     asm("barrier.sync.aligned %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
 
-    shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages] + B_offset);
-    shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages] + A_offset);
+    shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages]);
+    shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages]);
+
     for (int k4 = 0; k4 < K3/K4; ++k4) {
-      for (int j4 = 0; j4 < N3/N4/N4_threads; ++j4) {
-        register_tile<N4,K4> BT4;
-        BT4.load4(BT3, j4*(N4_threads*N4/4), k4*K4);
-        for (int i4 = 0; i4 < M3/M4/M4_threads; ++i4) {
-          register_tile<M4,K4> A4;
-          A4.load4(A3, i4*(M4_threads*M4/4), k4*K4);
-          C4[j4][i4].mad_transpose(A4, BT4);
-        }
-      }
+      A4.load4(A3, i4, k4*K4);
+      BT4.load4(BT3, j4, k4*K4);
+      C4.mad_transpose(A4, BT4);
     }
 
     /* inlining the level 2 tiles here *does not* improve performance,
@@ -467,12 +468,8 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   }
 
   /* write final result */
-  global_tile<M3,N3,M0> C3(C1, row_id*M3 + A_offset, col_id*N3 + B_offset);
-  for (int j4 = 0; j4 < N3/N4/N4_threads; ++j4) {
-    for (int i4 = 0; i4 < M3/M4/M4_threads; ++i4) {
-      C4[j4][i4].store4(C3, i4*(M4_threads*M4/4), j4*(N4_threads*N4));
-    }
-  }
+  global_tile<M1,N1,M0> C3(C0, b_i*M1 + row_id*M3, b_j*N1 + col_id*N3);
+  C4.store4(C3, i4, 4*j4);
 }
 
 /**
@@ -642,10 +639,11 @@ int main(int argc, char** argv) {
   std::printf("| -----: | -----: | -----: | ----------: | ----------: | --------------: | --------------: | -----: | :-------: |\n");
 
   /* run tests and report */
-  run_test.template operator()<2048,2048,2048,100,10>();
-  run_test.template operator()<4096,4096,4096,100,10>();
+  run_test.template operator()<2048,2048,2048,1000,100>();
+  run_test.template operator()<4096,4096,4096,1000,100>();
   run_test.template operator()<8192,8192,8192,100,10>();
   run_test.template operator()<16384,16384,16384,100,10>();
+  run_test.template operator()<32768,32768,32768,10,1>();
 
   return 0;
 }
