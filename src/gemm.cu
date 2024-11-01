@@ -210,7 +210,7 @@ union register_tile {
         /* when storing, write through so as not to evict useful data from
          * inputs from the L2 cache */
         for (int b = 0; b < 4; ++b) {
-          o.x4[i0 + j0*L1 + i*RS + j*(CS*L1) + b*(L1/4)] = x4[i + j*R + b*(R/4)];
+          __stwt(&o.x4[i0 + j0*L1 + i*RS + j*(CS*L1) + b*(L1/4)], x4[i + j*R + b*(R/4)]);
         }
       }
     }
@@ -587,10 +587,10 @@ int main(int argc, char** argv) {
   std::printf("| -----: | -----: | -----: | ----------: | ----------: | --------------: | --------------: | -----: | :-------: |\n");
 
   /* run tests and report */
-  run_test.template operator()<2048,2048,2048,1000,100>();
-  run_test.template operator()<4096,4096,4096,1000,100>();
-  run_test.template operator()<8192,8192,8192,100,10>();
-  run_test.template operator()<16384,16384,16384,100,10>();
+  run_test.template operator()<2048,2048,2048,10000,100>();
+  run_test.template operator()<4096,4096,4096,10000,100>();
+  run_test.template operator()<8192,8192,8192,1000,100>();
+  run_test.template operator()<16384,16384,16384,1000,100>();
   run_test.template operator()<32768,32768,32768,10,1>();
 
   return 0;
