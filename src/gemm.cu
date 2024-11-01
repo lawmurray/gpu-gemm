@@ -100,12 +100,11 @@ union shared_tile {
   requires (R%4 == 0 && L%4 == 0 && L1%4 == 0) && (T%(R/4) == 0)
   __device__ void copy4(const global_tile<R1,C1,L1>& o, const int i0,
       const int j0, const int t_id) {
-    int dst0 = __cvta_generic_to_shared(x4);
     int i = t_id%(R/4);
     int j1 = t_id/(R/4);
     for (int s = 0; s < R*C/4/T; ++s) {
       int j = j1 + s*(T/(R/4));
-      int dst = dst0 + (i + j*(L/4))*sizeof(float4);
+      int dst = __cvta_generic_to_shared(&x4[i + j*(L/4)]);
       const float4* src = &o.x4[i0 + i + (j0 + j)*(L1/4)];
       asm("cp.async.cg.shared.global [%0], [%1], %2;" :: "r"(dst), "l"(src),
           "n"(sizeof(float4)));
@@ -157,9 +156,8 @@ union register_vector {
   template<int R1, int C1, int L1>
   __device__ void load(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
-    const float* src = &o.x[i0 + j0*L1];
     for (int i = 0; i < N; ++i) {
-      x[i] = o.x[i*S];
+      x[i] = o.x[i0 + j0*L1 + i*S];
     }
   }
 
@@ -170,9 +168,8 @@ union register_vector {
   requires (N%4 == 0 && L1%4 == 0)
   __device__ void load4(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
-    const float4* src = &o.x4[i0 + j0*(L1/4)];
     for (int i = 0; i < N/4; ++i) {
-      x4[i] = src[i*S];
+      x4[i] = o.x4[i0 + j0*(L1/4) + i*S];
     }
   }
 
@@ -196,10 +193,9 @@ union register_tile {
   template<int R1, int C1, int L1>
   __device__ void store(global_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
-    float* dst = &o.x[i0 + j0*L1];
     for (int j = 0; j < C; ++j) {
       for (int i = 0; i < R; ++i) {
-        dst[i*RS + j*(CS*L1)] = x[i + j*R];
+        o.x[i0 + j0*L1 + i*RS + j*(CS*L1)] = x[i + j*R];
       }
     }
   }
@@ -211,13 +207,12 @@ union register_tile {
   requires (R%4 == 0 && L1%4 == 0)
   __device__ void store4(global_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
-    float4* dst = &o.x4[i0 + j0*L1];
     for (int j = 0; j < C/4; ++j) {
       for (int i = 0; i < R/4; ++i) {
         /* when storing, write through so as not to evict useful data from
          * inputs from the L2 cache */
         for (int b = 0; b < 4; ++b) {
-          __stwt(&dst[i*RS + j*(CS*L1) + b*(L1/4)], x4[i + j*R + b*(R/4)]);
+          __stwt(&o.x4[i0 + j0*L1 + i*RS + j*(CS*L1) + b*(L1/4)], x4[i + j*R + b*(R/4)]);
         }
       }
     }
