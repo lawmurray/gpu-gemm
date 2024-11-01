@@ -154,8 +154,8 @@ union register_vector {
   template<int R1, int C1, int L1>
   __device__ void load(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
-    for (int i = 0; i < N*S; i += S) {
-      x[i] = o.x[i0 + j0*L1 + i];
+    for (int i = 0; i < N; ++i) {
+      x[i] = o.x[i0 + j0*L1 + i*S];
     }
   }
 
@@ -166,8 +166,8 @@ union register_vector {
   requires (N%4 == 0 && L1%4 == 0)
   __device__ void load4(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
-    for (int i = 0; i < N/4*S; i += S) {
-      x4[i] = o.x4[i0 + j0*(L1/4) + i];
+    for (int i = 0; i < N/4; ++i) {
+      x4[i] = o.x4[i0 + j0*(L1/4) + i*S];
     }
   }
 
