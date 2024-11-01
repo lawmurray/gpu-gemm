@@ -59,11 +59,11 @@ union global_tile {
  */
 template<int R, int C, int L = R>
 requires (R%4 == 0 && L >= R)
-union shared_tile {
+struct shared_tile {
   /**
    * Constructor.
    */
-  __device__ shared_tile(float* x) : x(x) {
+  __device__ shared_tile(float* x) : x(__cvta_generic_to_shared(x)) {
     //
   }
 
@@ -73,7 +73,7 @@ union shared_tile {
   template<int R1, int C1, int L1>
   __device__ shared_tile(const shared_tile<R1,C1,L1>& o, const int i,
       const int j) :
-      x(&o.x[i + j*L1]) {
+      x(o.x + i + j*L1) {
     //
   }
 
@@ -81,14 +81,22 @@ union shared_tile {
    * Load an element.
    */
   __device__ float load(const int i) const {
-    return x[i];
+    float y;
+    int src = x + i*sizeof(float);
+    asm("ld.shared.f32 %0, [%1];" : "=f"(y) : "r"(src));
+    return y;
   }
 
   /**
    * Load an element using 128-bit loads.
    */
   __device__ float4 load4(const int i) const {
-    return x4[i];
+    float4 y;
+    int src = x + i*sizeof(float4);
+    asm("ld.shared.v4.f32 {%0, %1, %2, %3}, [%4];" :
+        "=f"(y.x), "=f"(y.y), "=f"(y.z), "=f"(y.w) :
+        "r"(src));
+    return y;
   }
 
   /**
@@ -105,12 +113,11 @@ union shared_tile {
   requires (T%R == 0)
   __device__ void copy(const global_tile<R1,C1,L1>& o, const int i0,
       const int j0, const int t_id) {
-    int dst0 = __cvta_generic_to_shared(x);
     int i = t_id%R;
     int j1 = t_id/R;
     for (int s = 0; s < R*C/T; ++s) {
       int j = j1 + s*(T/R);
-      int dst = dst0 + (i + j*L)*sizeof(float);
+      int dst = x + (i + j*L)*sizeof(float);
       const float* src = &o.x[i0 + i + (j0 + j)*L1];
       asm("cp.async.ca.shared.global [%0], [%1], %2;" :: "r"(dst), "l"(src),
           "n"(sizeof(float)));
@@ -131,12 +138,11 @@ union shared_tile {
   requires (R%4 == 0 && L%4 == 0 && L1%4 == 0) && (T%(R/4) == 0)
   __device__ void copy4(const global_tile<R1,C1,L1>& o, const int i0,
       const int j0, const int t_id) {
-    int dst0 = __cvta_generic_to_shared(x4);
     int i = t_id%(R/4);
     int j1 = t_id/(R/4);
     for (int s = 0; s < R*C/4/T; ++s) {
       int j = j1 + s*(T/(R/4));
-      int dst = dst0 + (i + j*(L/4))*sizeof(float4);
+      int dst = x + (i + j*(L/4))*sizeof(float4);
       const float4* src = &o.x4[i0 + i + (j0 + j)*(L1/4)];
       asm("cp.async.cg.shared.global [%0], [%1], %2;" :: "r"(dst), "l"(src),
           "n"(sizeof(float4)));
@@ -158,20 +164,18 @@ union shared_tile {
   requires (T%C == 0)
   __device__ void copy_transpose(const global_tile<R1,C1,L1>& o, const int i0,
       const int j0, const int t_id) {
-    int dst0 = __cvta_generic_to_shared(x);
     int i = t_id%C;
     int j1 = t_id/C;
     for (int s = 0; s < C*R/T; ++s) {
       int j = j1 + s*(T/C);
-      int dst = dst0 + (j + i*L)*sizeof(float);
+      int dst = x + (j + i*L)*sizeof(float);
       const float* src = &o.x[i0 + i + (j0 + j)*L1];
       asm("cp.async.ca.shared.global.L2::128B [%0], [%1], %2;" :: "r"(dst),
           "l"(src), "n"(sizeof(float)));
     }
   }
 
-  float* __restrict__ x;
-  float4* __restrict__ x4;
+  int x;
 };
 
 /**
