@@ -157,8 +157,9 @@ union register_vector {
   template<int R1, int C1, int L1>
   __device__ void load(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
+    const float* src = &o.x[i0 + j0*L1];
     for (int i = 0; i < N; ++i) {
-      x[i] = o.x[i0 + i*S + j0*L1];
+      x[i] = o.x[i*S];
     }
   }
 
@@ -169,8 +170,9 @@ union register_vector {
   requires (N%4 == 0 && L1%4 == 0)
   __device__ void load4(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
+    const float4* src = &o.x4[i0 + j0*(L1/4)];
     for (int i = 0; i < N/4; ++i) {
-      x4[i] = o.x4[i0 + i*S + j0*(L1/4)];
+      x4[i] = src[i*S];
     }
   }
 
@@ -194,9 +196,10 @@ union register_tile {
   template<int R1, int C1, int L1>
   __device__ void store(global_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
+    float* dst = &o.x[i0 + j0*L1];
     for (int j = 0; j < C; ++j) {
       for (int i = 0; i < R; ++i) {
-        o.x[i0 + i*RS + (j0 + j*CS)*L1] = x[i + j*R];
+        dst[i*RS + j*(CS*L1)] = x[i + j*R];
       }
     }
   }
@@ -208,12 +211,13 @@ union register_tile {
   requires (R%4 == 0 && L1%4 == 0)
   __device__ void store4(global_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
+    float4* dst = &o.x4[i0 + j0*L1];
     for (int j = 0; j < C/4; ++j) {
       for (int i = 0; i < R/4; ++i) {
         /* when storing, write through so as not to evict useful data from
          * inputs from the L2 cache */
         for (int b = 0; b < 4; ++b) {
-          __stwt(&o.x4[i0 + i*RS + (j0 + j*CS)*L1 + b*(L1/4)], x4[i + j*R + b*(R/4)]);
+          __stwt(&dst[i*RS + j*(CS*L1) + b*(L1/4)], x4[i + j*R + b*(R/4)]);
         }
       }
     }
