@@ -227,8 +227,8 @@ union register_tile {
   template<int S1, int S2>
   __device__ void add_outer(const register_vector<R,S1>& a,
       const register_vector<C,S2>& b) {
-    for (int i = 0; i < R; ++i) {
-      for (int j = 0; j < C; ++j) {
+    for (int j = 0; j < C; ++j) {
+      for (int i = 0; i < R; ++i) {
         x[i + j*R] += a.x[i]*b.x[j];
       }
     }
