@@ -566,7 +566,7 @@ int main(int argc, char** argv) {
     ms2 /= ntrials;
     float tflops1 = flop/ms1/1.0e9f;
     float tflops2 = flop/ms2/1.0e9f;
-    float error = diff<M,M>(C, D);    
+    float error = diff<M,N>(C, D);    
 
     /* report results */
     std::printf("| %6d | %6d | %6d | %11.3f | %11.3f | %15.3f | %15.3f | %6d | %9.3f |\n",
