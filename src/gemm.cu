@@ -391,9 +391,6 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
 
   const bool A_reader = ((row_id == 0 || row_id == 1) && col_id == 0) ||
      ((row_id == 2 || row_id == 3) && col_id == 1);
-  const bool B_reader = (row_id == 2 && col_id == 0) ||
-      (row_id == 0 && col_id == 1);
-  assert(!(A_reader && B_reader));
 
   /* barrier ids associated with the row and column handled by the warp */
   const int row_barrier = row_id;
@@ -417,57 +414,73 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   /* level 4 tiles */
   register_tile<M4,N4> C4[N3/N4/N4_threads][M3/M4/M4_threads];
 
+  const int B_offset = t_id/M4_threads*N4;
+  const int A_offset = t_id%M4_threads*M4;
+
   /* multiply */
-  /* inlining the level 2 tiles here improves performance, possibly because
-    * the loop is unrolled and may save 64-bit pointer operations; see below
-    * for situation where inlining does not improve performance */
   if (A_reader) {
     for (int stage = 0; stage < nstages - 2; ++stage) {
       shared_tile<M3,K3> A3(A_shared[row_id][stage]);
       A3.copy4<wsize>(A1, row_id*(M3/4), stage*K2, t_id);
       asm("cp.async.commit_group;");
     }
-  } else if (B_reader) {
-    for (int stage = 0; stage < nstages - 2; ++stage) {
-      shared_tile<N3,K3> BT3(BT_shared[col_id][stage]);
-      BT3.copy_transpose<wsize>(B1, stage*K2, col_id*N3, t_id);
-      asm("cp.async.commit_group;");
-    }
-  }
 
-  const int B_offset = t_id/M4_threads*N4;
-  const int A_offset = t_id%M4_threads*M4;
+    for (int k2 = 0; k2 < K1/K2; ++k2) {
+      int next_k = (k2 + (nstages - 2))%(K1/K2);
+      int next_stage = (k2 + (nstages - 2))%nstages;
 
-  for (int k2 = 0; k2 < K1/K2; ++k2) {
-    /* inlining the level 2 tiles here *does not* improve performance,
-     * possibly because the loop on k2 is not unrolled */
-    int next_k = (k2 + (nstages - 2))%(K1/K2);
-    int next_stage = (k2 + (nstages - 2))%nstages;
-    if (A_reader) {
       shared_tile<M3,K3> next_A3(A_shared[row_id][next_stage]);
       next_A3.copy4<wsize>(A1, row_id*(M3/4), next_k*K2, t_id);
       asm("cp.async.commit_group;");
       asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
-    } else if (B_reader) {
-      shared_tile<N3,K3> next_BT3(BT_shared[col_id][next_stage]);
-      next_BT3.copy_transpose<wsize>(B1, next_k*K2, col_id*N3, t_id);
+
+      asm("barrier.sync %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
+      asm("barrier.sync %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
+
+      shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages] + B_offset);
+      shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages] + A_offset);
+      for (int k4 = 0; k4 < K3/K4; ++k4) {
+        for (int j4 = 0; j4 < N3/N4/N4_threads; ++j4) {
+          register_tile<N4,K4> BT4;
+          BT4.load4(BT3, j4*(N4_threads*N4/4), k4*K4);
+          for (int i4 = 0; i4 < M3/M4/M4_threads; ++i4) {
+            register_tile<M4,K4> A4;
+            A4.load4(A3, i4*(M4_threads*M4/4), k4*K4);
+            C4[j4][i4].mad_transpose(A4, BT4);
+          }
+        }
+      }
+    }
+  } else {
+    for (int stage = 0; stage < nstages - 2; ++stage) {
+      shared_tile<N3,K3> BT3(BT_shared[col_id][stage]);
+      BT3.copy_transpose<2*wsize>(B1, stage*K2, col_id*N3, wsize*(row_id%2) + t_id);
       asm("cp.async.commit_group;");
-      asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
     }
 
-    asm("barrier.sync %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
-    asm("barrier.sync %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
+    for (int k2 = 0; k2 < K1/K2; ++k2) {
+      int next_k = (k2 + (nstages - 2))%(K1/K2);
+      int next_stage = (k2 + (nstages - 2))%nstages;
 
-    shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages] + B_offset);
-    shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages] + A_offset);
-    for (int k4 = 0; k4 < K3/K4; ++k4) {
-      for (int j4 = 0; j4 < N3/N4/N4_threads; ++j4) {
-        register_tile<N4,K4> BT4;
-        BT4.load4(BT3, j4*(N4_threads*N4/4), k4*K4);
-        for (int i4 = 0; i4 < M3/M4/M4_threads; ++i4) {
-          register_tile<M4,K4> A4;
-          A4.load4(A3, i4*(M4_threads*M4/4), k4*K4);
-          C4[j4][i4].mad_transpose(A4, BT4);
+      shared_tile<N3,K3> next_BT3(BT_shared[col_id][next_stage]);
+      next_BT3.copy_transpose<2*wsize>(B1, next_k*K2, col_id*N3, wsize*(row_id%2) + t_id);
+      asm("cp.async.commit_group;");
+      asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
+
+      asm("barrier.sync %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
+      asm("barrier.sync %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
+
+      shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages] + B_offset);
+      shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages] + A_offset);
+      for (int k4 = 0; k4 < K3/K4; ++k4) {
+        for (int j4 = 0; j4 < N3/N4/N4_threads; ++j4) {
+          register_tile<N4,K4> BT4;
+          BT4.load4(BT3, j4*(N4_threads*N4/4), k4*K4);
+          for (int i4 = 0; i4 < M3/M4/M4_threads; ++i4) {
+            register_tile<M4,K4> A4;
+            A4.load4(A3, i4*(M4_threads*M4/4), k4*K4);
+            C4[j4][i4].mad_transpose(A4, BT4);
+          }
         }
       }
     }
