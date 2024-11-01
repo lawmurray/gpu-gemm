@@ -106,8 +106,8 @@ union shared_tile {
       int j = j1 + s*(T/(R/4));
       int dst = __cvta_generic_to_shared(&x4[i + j*(L/4)]);
       const float4* src = &o.x4[i0 + i + (j0 + j)*(L1/4)];
-      asm("cp.async.cg.shared.global [%0], [%1], %2;" :: "r"(dst), "l"(src),
-          "n"(sizeof(float4)));
+      asm("cp.async.cg.shared.global [%0], [%1], %2;" :: "r"(dst),
+          "l"(src), "n"(sizeof(float4)));
     }
   }
 
@@ -133,7 +133,7 @@ union shared_tile {
       int j = j1 + s*(T/C);
       int dst = dst0 + (j + i*L)*sizeof(float);
       const float* src = &o.x[i0 + i + (j0 + j)*L1];
-      asm("cp.async.ca.shared.global.L2::128B [%0], [%1], %2;" :: "r"(dst),
+      asm("cp.async.ca.shared.global.L2::256B [%0], [%1], %2;" :: "r"(dst),
           "l"(src), "n"(sizeof(float)));
     }
   }
