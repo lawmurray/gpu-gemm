@@ -426,6 +426,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     }
 
     for (int k2 = 0; k2 < K1/K2; ++k2) {
+      int stage = k2%nstages;
       int next_k = (k2 + (nstages - 2))%(K1/K2);
       int next_stage = (k2 + (nstages - 2))%nstages;
 
@@ -434,11 +435,11 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
       asm("cp.async.commit_group;");
       asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
 
-      asm("barrier.sync %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
-      asm("barrier.sync %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
+      asm("barrier.arrive %0, %1;" :: "r"(row_barrier + 8*(stage%2)), "n"(nthreads/M3_warps));
+      asm("barrier.sync %0, %1;" :: "r"(col_barrier + 8*(stage%2)), "n"(nthreads/N3_warps));
 
-      shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages] + B_offset);
-      shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages] + A_offset);
+      shared_tile<N3,K3> BT3(BT_shared[col_id][stage] + B_offset);
+      shared_tile<M3,K3> A3(A_shared[row_id][stage] + A_offset);
       for (int k4 = 0; k4 < K3/K4; ++k4) {
         for (int j4 = 0; j4 < N3/N4/N4_threads; ++j4) {
           register_tile<N4,K4> BT4;
@@ -459,6 +460,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     }
 
     for (int k2 = 0; k2 < K1/K2; ++k2) {
+      int stage = k2%nstages;
       int next_k = (k2 + (nstages - 2))%(K1/K2);
       int next_stage = (k2 + (nstages - 2))%nstages;
 
@@ -467,11 +469,11 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
       asm("cp.async.commit_group;");
       asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
 
-      asm("barrier.sync %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
-      asm("barrier.sync %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
+      asm("barrier.sync %0, %1;" :: "r"(row_barrier + 8*(stage%2)), "n"(nthreads/M3_warps));
+      asm("barrier.sync %0, %1;" :: "r"(col_barrier + 8*(stage%2)), "n"(nthreads/N3_warps));
 
-      shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages] + B_offset);
-      shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages] + A_offset);
+      shared_tile<N3,K3> BT3(BT_shared[col_id][stage] + B_offset);
+      shared_tile<M3,K3> A3(A_shared[row_id][stage] + A_offset);
       for (int k4 = 0; k4 < K3/K4; ++k4) {
         for (int j4 = 0; j4 < N3/N4/N4_threads; ++j4) {
           register_tile<N4,K4> BT4;
