@@ -59,46 +59,7 @@ union global_tile {
  */
 template<int R, int C, int L = R>
 requires (R%4 == 0 && L >= R)
-struct shared_tile {
-  /**
-   * Constructor.
-   */
-  __device__ shared_tile(float* x) : x(__cvta_generic_to_shared(x)) {
-    //
-  }
-
-  /**
-   * Constructor.
-   */
-  template<int R1, int C1, int L1>
-  __device__ shared_tile(const shared_tile<R1,C1,L1>& o, const int i,
-      const int j) :
-      x(o.x + i + j*L1) {
-    //
-  }
-
-  /**
-   * Load an element.
-   */
-  __device__ float load(const int i) const {
-    float y;
-    int src = x + i*sizeof(float);
-    asm("ld.shared.f32 %0, [%1];" : "=f"(y) : "r"(src));
-    return y;
-  }
-
-  /**
-   * Load an element using 128-bit loads.
-   */
-  __device__ float4 load4(const int i) const {
-    float4 y;
-    int src = x + i*sizeof(float4);
-    asm("ld.shared.v4.f32 {%0, %1, %2, %3}, [%4];" :
-        "=f"(y.x), "=f"(y.y), "=f"(y.z), "=f"(y.w) :
-        "r"(src));
-    return y;
-  }
-
+union shared_tile {
   /**
    * Copy into this tile from global memory using 32-bit loads.
    * 
@@ -113,11 +74,12 @@ struct shared_tile {
   requires (T%R == 0)
   __device__ void copy(const global_tile<R1,C1,L1>& o, const int i0,
       const int j0, const int t_id) {
+    int dst0 = __cvta_generic_to_shared(x);
     int i = t_id%R;
     int j1 = t_id/R;
     for (int s = 0; s < R*C/T; ++s) {
       int j = j1 + s*(T/R);
-      int dst = x + (i + j*L)*sizeof(float);
+      int dst = dst0 + (i + j*L)*sizeof(float);
       const float* src = &o.x[i0 + i + (j0 + j)*L1];
       asm("cp.async.ca.shared.global [%0], [%1], %2;" :: "r"(dst), "l"(src),
           "n"(sizeof(float)));
@@ -138,11 +100,12 @@ struct shared_tile {
   requires (R%4 == 0 && L%4 == 0 && L1%4 == 0) && (T%(R/4) == 0)
   __device__ void copy4(const global_tile<R1,C1,L1>& o, const int i0,
       const int j0, const int t_id) {
+    int dst0 = __cvta_generic_to_shared(x4);
     int i = t_id%(R/4);
     int j1 = t_id/(R/4);
     for (int s = 0; s < R*C/4/T; ++s) {
       int j = j1 + s*(T/(R/4));
-      int dst = x + (i + j*(L/4))*sizeof(float4);
+      int dst = dst0 + (i + j*(L/4))*sizeof(float4);
       const float4* src = &o.x4[i0 + i + (j0 + j)*(L1/4)];
       asm("cp.async.cg.shared.global [%0], [%1], %2;" :: "r"(dst), "l"(src),
           "n"(sizeof(float4)));
@@ -164,18 +127,20 @@ struct shared_tile {
   requires (T%C == 0)
   __device__ void copy_transpose(const global_tile<R1,C1,L1>& o, const int i0,
       const int j0, const int t_id) {
+    int dst0 = __cvta_generic_to_shared(x);
     int i = t_id%C;
     int j1 = t_id/C;
     for (int s = 0; s < C*R/T; ++s) {
       int j = j1 + s*(T/C);
-      int dst = x + (j + i*L)*sizeof(float);
+      int dst = dst0 + (j + i*L)*sizeof(float);
       const float* src = &o.x[i0 + i + (j0 + j)*L1];
       asm("cp.async.ca.shared.global.L2::128B [%0], [%1], %2;" :: "r"(dst),
           "l"(src), "n"(sizeof(float)));
     }
   }
 
-  int x;
+  float x[R*C];
+  float4 x4[R*C/4];
 };
 
 /**
@@ -193,7 +158,7 @@ union register_vector {
   __device__ void load(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
     for (int i = 0; i < N; ++i) {
-      x[i] = o.load(i0 + i*S + j0*L1);
+      x[i] = o.x[i0 + i*S + j0*L1];
     }
   }
 
@@ -205,7 +170,7 @@ union register_vector {
   __device__ void load4(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
     for (int i = 0; i < N/4; ++i) {
-      x4[i] = o.load4(i0 + i*S + j0*(L1/4));
+      x4[i] = o.x4[i0 + i*S + j0*(L1/4)];
     }
   }
 
@@ -413,63 +378,49 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   global_tile<K1,N1,K0> B1(B0, 0, b_j*N1);
 
   /* level 3 buffers (B is transposed) */
-  __shared__ float A_shared[M3_warps][nstages][M3*K3];
-  __shared__ float BT_shared[N3_warps][nstages][N3*K3];
+  __shared__ shared_tile<M3,K3> A3[M3_warps][nstages];
+  __shared__ shared_tile<N3,K3> BT3[N3_warps][nstages];
 
   /* start pipeline */
   const int r_id = t_id + row_id*wsize;
   const int c_id = t_id + col_id*wsize;
   for (int stage = 0; stage < nstages - 1; ++stage) {
-    shared_tile<N3,K3> BT3(BT_shared[col_id][stage]);
-    BT3.copy_transpose<nthreads/N3_warps>(B1, stage*K2, col_id*N3, r_id);
-
-    shared_tile<M3,K3> A3(A_shared[row_id][stage]);
-    A3.copy4<nthreads/M3_warps>(A1, row_id*(M3/4), stage*K2, c_id);
-
+    BT3[col_id][stage].copy_transpose<nthreads/N3_warps>(B1, stage*K2, col_id*N3, r_id);
+    A3[row_id][stage].copy4<nthreads/M3_warps>(A1, row_id*(M3/4), stage*K2, c_id);
     asm("cp.async.commit_group;");
   }
 
   /* level 4 tiles */
+  register_vector<M4,M4_threads> a4;
+  register_vector<N4,N4_threads> b4;
   register_tile<M4,N4,M4_threads,N4_threads> C4;
 
   /* level 4 offsets to first elements */
-  const int i4 = t_id%M4_threads*4;
-  const int j4 = t_id/M4_threads*4;
+  const int i4 = t_id%M4_threads;
+  const int j4 = t_id/M4_threads;
 
   /* multiply */
   for (int k2 = 0; k2 < K1/K2; ++k2) {
-    int stage = k2%nstages;
-
     asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
     asm("barrier.sync.aligned %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
     asm("barrier.sync.aligned %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
 
-    shared_tile<N3,K3> BT3(BT_shared[col_id][stage] + j4);
-    shared_tile<M3,K3> A3(A_shared[row_id][stage] + i4);
-
-    register_vector<M4,M4_threads> a4;
-    register_vector<N4,N4_threads> b4;
-
+    int stage = k2%nstages;
     for (int k4 = 0; k4 < K3/K4; ++k4) {
-      a4.load4(A3, 0, k4*K4);
-      b4.load4(BT3, 0, k4*K4);
+      a4.load4(A3[row_id][stage], i4, k4*K4);
+      b4.load4(BT3[col_id][stage], j4, k4*K4);
       C4.add_outer(a4, b4);
     }
 
-    int next_k = (k2 + (nstages - 1))%(K1/K2);
     int next_stage = (k2 + (nstages - 1))%nstages;
-
-    shared_tile<N3,K3> next_BT3(BT_shared[col_id][next_stage]);
-    next_BT3.copy_transpose<nthreads/N3_warps>(B1, next_k*K2, col_id*N3, r_id);
-
-    shared_tile<M3,K3> next_A3(A_shared[row_id][next_stage]);
-    next_A3.copy4<nthreads/M3_warps>(A1, row_id*(M3/4), next_k*K2, c_id);
-
+    int next_k = (k2 + (nstages - 1))%(K1/K2);
+    BT3[col_id][next_stage].copy_transpose<nthreads/N3_warps>(B1, next_k*K2, col_id*N3, r_id);
+    A3[row_id][next_stage].copy4<nthreads/M3_warps>(A1, row_id*(M3/4), next_k*K2, c_id);
     asm("cp.async.commit_group;");
   }
 
   /* write final result */
-  C4.store4(C0, b_i*(M1/4) + row_id*(M3/4) + i4/4, b_j*(N1/4) + col_id*(N3/4) + j4/4);
+  C4.store4(C0, b_i*(M1/4) + row_id*(M3/4) + i4, b_j*(N1/4) + col_id*(N3/4) + j4);
 }
 
 /**
