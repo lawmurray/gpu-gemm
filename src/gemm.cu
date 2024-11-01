@@ -447,7 +447,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
 
     asm("cp.async.commit_group;");
 
-    asm("cp.async.wait_group %0;" :: "n"(nstages - 3));
+    asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
     asm("barrier.sync.aligned %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
     asm("barrier.sync.aligned %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
 
