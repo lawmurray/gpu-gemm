@@ -78,6 +78,20 @@ union shared_tile {
   }
 
   /**
+   * Load an element.
+   */
+  __device__ float load(const int i) const {
+    return x[i];
+  }
+
+  /**
+   * Load an element using 128-bit loads.
+   */
+  __device__ float4 load4(const int i) const {
+    return x4[i];
+  }
+
+  /**
    * Copy into this tile from global memory using 32-bit loads.
    * 
    * @tparam T Number of threads in the group sharing the copy.
@@ -175,7 +189,7 @@ union register_vector {
   __device__ void load(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
     for (int i = 0; i < N; ++i) {
-      x[i] = o.x[i0 + i*S + j0*L1];
+      x[i] = o.load(i0 + i*S + j0*L1);
     }
   }
 
@@ -187,7 +201,7 @@ union register_vector {
   __device__ void load4(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
     for (int i = 0; i < N/4; ++i) {
-      x4[i] = o.x4[i0 + i*S + j0*(L1/4)];
+      x4[i] = o.load4(i0 + i*S + j0*(L1/4));
     }
   }
 
@@ -398,20 +412,10 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   __shared__ float A_shared[M3_warps][nstages][M3*K3];
   __shared__ float BT_shared[N3_warps][nstages][N3*K3];
 
-  /* level 4 tiles */
-  register_tile<M4,N4,M4_threads,N4_threads> C4;
-
-  /* level 4 offsets to first elements */
-  const int i4 = t_id%M4_threads;
-  const int j4 = t_id/M4_threads;
-
-  /* multiply */
+  /* start pipeline */
   const int r_id = t_id + row_id*wsize;
   const int c_id = t_id + col_id*wsize;
   for (int stage = 0; stage < nstages - 1; ++stage) {
-    /* inlining the level 2 tiles here improves performance, possibly because
-     * the loop is unrolled and may save 64-bit pointer operations; see below
-     * for situation where inlining does not improve performance */
     shared_tile<N3,K3> BT3(BT_shared[col_id][stage]);
     BT3.copy_transpose<nthreads/N3_warps>(B1, stage*K2, col_id*N3, r_id);
 
@@ -421,25 +425,33 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     asm("cp.async.commit_group;");
   }
 
+  /* level 4 tiles */
+  register_tile<M4,N4,M4_threads,N4_threads> C4;
+
+  /* level 4 offsets to first elements */
+  const int i4 = t_id%M4_threads*4;
+  const int j4 = t_id/M4_threads*4;
+
+  /* multiply */
   for (int k2 = 0; k2 < K1/K2; ++k2) {
+    int stage = k2%nstages;
+
     asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
     asm("barrier.sync.aligned %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
     asm("barrier.sync.aligned %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
 
-    shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages]);
-    shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages]);
+    shared_tile<N3,K3> BT3(BT_shared[col_id][stage] + j4);
+    shared_tile<M3,K3> A3(A_shared[row_id][stage] + i4);
 
     register_vector<M4,M4_threads> a4;
     register_vector<N4,N4_threads> b4;
 
     for (int k4 = 0; k4 < K3/K4; ++k4) {
-      a4.load4(A3, i4, k4*K4);
-      b4.load4(BT3, j4, k4*K4);
+      a4.load4(A3, 0, k4*K4);
+      b4.load4(BT3, 0, k4*K4);
       C4.add_outer(a4, b4);
     }
 
-    /* inlining the level 2 tiles here *does not* improve performance,
-     * possibly because the loop on k2 is not unrolled */
     int next_k = (k2 + (nstages - 1))%(K1/K2);
     int next_stage = (k2 + (nstages - 1))%nstages;
 
@@ -453,8 +465,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   }
 
   /* write final result */
-  global_tile<M1,N1,M0> C3(C0, b_i*M1 + row_id*M3, b_j*N1 + col_id*N3);
-  C4.store4(C3, i4, j4);
+  C4.store4(C0, b_i*(M1/4) + row_id*(M3/4) + i4/4, b_j*(N1/4) + col_id*(N3/4) + j4/4);
 }
 
 /**
