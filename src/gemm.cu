@@ -293,7 +293,12 @@ float diff(const float* C, const float* D) {
   float mx = 0.0;
   for (int j = 0; j < N; ++j) {
     for (int i = 0; i < M; ++i) {
-      mx = std::max(mx, std::abs(C[i + j*M] - D[i + j*M]));
+      float err = std::abs(C[i + j*M] - D[i + j*M]);
+      if (std::isnan(err)) {
+        mx = err;
+      } else {
+        mx = std::max(mx, err);
+      }
     }
   }
   return mx;
