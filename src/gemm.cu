@@ -415,7 +415,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   /* multiply */
   const int r_id = t_id + row_id*wsize;
   const int c_id = t_id + col_id*wsize;
-  for (int stage = 0; stage < nstages - 1; ++stage) {
+  for (int stage = 0; stage < nstages - 2; ++stage) {
     /* inlining the level 2 tiles here improves performance, possibly because
      * the loop is unrolled and may save 64-bit pointer operations; see below
      * for situation where inlining does not improve performance */
@@ -432,7 +432,22 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   const int A_offset = t_id%M4_threads*M4;
 
   for (int k2 = 0; k2 < K1/K2; ++k2) {
-    asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
+    int next_k = (k2 + (nstages - 2))%(K1/K2);
+    int next_stage = (k2 + (nstages - 2))%nstages;
+
+    /* inlining the level 2 tiles here *does not* improve performance,
+     * possibly because the loop on k2 is not unrolled */
+    global_tile<K2,N2,K0> next_B2(B1, next_k*K2, col_id*N3);
+    shared_tile<N3,K3> next_BT3(BT_shared[col_id][next_stage]);
+    next_BT3.copy_transpose<nthreads/N3_warps>(next_B2, 0, 0, r_id);
+
+    global_tile<M2,K2,M0> next_A2(A1, row_id*M3, next_k*K2);
+    shared_tile<M3,K3> next_A3(A_shared[row_id][next_stage]);
+    next_A3.copy4<nthreads/M3_warps>(next_A2, 0, 0, c_id);
+
+    asm("cp.async.commit_group;");
+
+    asm("cp.async.wait_group %0;" :: "n"(nstages - 3));
     asm("barrier.sync.aligned %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
     asm("barrier.sync.aligned %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
 
@@ -449,21 +464,6 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
         }
       }
     }
-
-    /* inlining the level 2 tiles here *does not* improve performance,
-     * possibly because the loop on k2 is not unrolled */
-    int next_k = (k2 + (nstages - 1))%(K1/K2);
-    int next_stage = (k2 + (nstages - 1))%nstages;
-
-    global_tile<K2,N2,K0> next_B2(B1, next_k*K2, col_id*N3);
-    shared_tile<N3,K3> next_BT3(BT_shared[col_id][next_stage]);
-    next_BT3.copy_transpose<nthreads/N3_warps>(next_B2, 0, 0, r_id);
-
-    global_tile<M2,K2,M0> next_A2(A1, row_id*M3, next_k*K2);
-    shared_tile<M3,K3> next_A3(A_shared[row_id][next_stage]);
-    next_A3.copy4<nthreads/M3_warps>(next_A2, 0, 0, c_id);
-
-    asm("cp.async.commit_group;");
   }
 
   /* write final result */
