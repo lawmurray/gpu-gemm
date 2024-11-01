@@ -15,6 +15,7 @@
  */
 
 #include <cstdio>
+#include <cassert>
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 #include <curand.h>
@@ -119,9 +120,8 @@ union shared_tile {
       const int j0, const int t_id) {
     int dst0 = __cvta_generic_to_shared(x4);
     int i = t_id%(R/4);
-    int j1 = t_id/(R/4);
     for (int s = 0; s < R*C/4/T; ++s) {
-      int j = j1 + s*(T/(R/4));
+      int j = t_id/(R/4) + s*(T/(R/4));
       int dst = dst0 + (i + j*(L/4))*sizeof(float4);
       const float4* src = &o.x4[i0 + i + (j0 + j)*(L1/4)];
       asm("cp.async.cg.shared.global [%0], [%1], %2;" :: "r"(dst), "l"(src),
@@ -146,9 +146,8 @@ union shared_tile {
       const int j0, const int t_id) {
     int dst0 = __cvta_generic_to_shared(x);
     int i = t_id%C;
-    int j1 = t_id/C;
     for (int s = 0; s < C*R/T; ++s) {
-      int j = j1 + s*(T/C);
+      int j = t_id/C + s*(T/C);
       int dst = dst0 + (j + i*L)*sizeof(float);
       const float* src = &o.x[i0 + i + (j0 + j)*L1];
       asm("cp.async.ca.shared.global.L2::128B [%0], [%1], %2;" :: "r"(dst),
@@ -390,6 +389,12 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   const int row_id = w_id%M3_warps;  // id of row handled warp at level 3
   const int col_id = w_id/M3_warps;  // id of column handled warp at level 3
 
+  const bool A_reader = ((row_id == 0 || row_id == 1) && col_id == 0) ||
+     ((row_id == 2 || row_id == 3) && col_id == 1);
+  const bool B_reader = (row_id == 2 && col_id == 0) ||
+      (row_id == 0 && col_id == 1);
+  assert(!(A_reader && B_reader));
+
   /* barrier ids associated with the row and column handled by the warp */
   const int row_barrier = row_id;
   const int col_barrier = M3_warps + col_id;
@@ -413,28 +418,45 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   register_tile<M4,N4> C4[N3/N4/N4_threads][M3/M4/M4_threads];
 
   /* multiply */
-  const int r_id = t_id + row_id*wsize;
-  const int c_id = t_id + col_id*wsize;
-  for (int stage = 0; stage < nstages - 1; ++stage) {
-    /* inlining the level 2 tiles here improves performance, possibly because
-     * the loop is unrolled and may save 64-bit pointer operations; see below
-     * for situation where inlining does not improve performance */
-    shared_tile<N3,K3> BT3(BT_shared[col_id][stage]);
-    BT3.copy_transpose<nthreads/N3_warps>(B1, stage*K2, col_id*N3, r_id);
-
-    shared_tile<M3,K3> A3(A_shared[row_id][stage]);
-    A3.copy4<nthreads/M3_warps>(A1, row_id*(M3/4), stage*K2, c_id);
-
-    asm("cp.async.commit_group;");
+  /* inlining the level 2 tiles here improves performance, possibly because
+    * the loop is unrolled and may save 64-bit pointer operations; see below
+    * for situation where inlining does not improve performance */
+  if (A_reader) {
+    for (int stage = 0; stage < nstages - 2; ++stage) {
+      shared_tile<M3,K3> A3(A_shared[row_id][stage]);
+      A3.copy4<wsize>(A1, row_id*(M3/4), stage*K2, t_id);
+      asm("cp.async.commit_group;");
+    }
+  } else if (B_reader) {
+    for (int stage = 0; stage < nstages - 2; ++stage) {
+      shared_tile<N3,K3> BT3(BT_shared[col_id][stage]);
+      BT3.copy_transpose<wsize>(B1, stage*K2, col_id*N3, t_id);
+      asm("cp.async.commit_group;");
+    }
   }
 
   const int B_offset = t_id/M4_threads*N4;
   const int A_offset = t_id%M4_threads*M4;
 
   for (int k2 = 0; k2 < K1/K2; ++k2) {
-    asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
-    asm("barrier.sync.aligned %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
-    asm("barrier.sync.aligned %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
+    /* inlining the level 2 tiles here *does not* improve performance,
+     * possibly because the loop on k2 is not unrolled */
+    int next_k = (k2 + (nstages - 2))%(K1/K2);
+    int next_stage = (k2 + (nstages - 2))%nstages;
+    if (A_reader) {
+      shared_tile<M3,K3> next_A3(A_shared[row_id][next_stage]);
+      next_A3.copy4<wsize>(A1, row_id*(M3/4), next_k*K2, t_id);
+      asm("cp.async.commit_group;");
+      asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
+    } else if (B_reader) {
+      shared_tile<N3,K3> next_BT3(BT_shared[col_id][next_stage]);
+      next_BT3.copy_transpose<wsize>(B1, next_k*K2, col_id*N3, t_id);
+      asm("cp.async.commit_group;");
+      asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
+    }
+
+    asm("barrier.sync %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
+    asm("barrier.sync %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
 
     shared_tile<N3,K3> BT3(BT_shared[col_id][k2%nstages] + B_offset);
     shared_tile<M3,K3> A3(A_shared[row_id][k2%nstages] + A_offset);
@@ -449,21 +471,6 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
         }
       }
     }
-
-    /* inlining the level 2 tiles here *does not* improve performance,
-     * possibly because the loop on k2 is not unrolled */
-    int next_k = (k2 + (nstages - 1))%(K1/K2);
-    int next_stage = (k2 + (nstages - 1))%nstages;
-
-    global_tile<K2,N2,K0> next_B2(B1, next_k*K2, col_id*N3);
-    shared_tile<N3,K3> next_BT3(BT_shared[col_id][next_stage]);
-    next_BT3.copy_transpose<nthreads/N3_warps>(next_B2, 0, 0, r_id);
-
-    global_tile<M2,K2,M0> next_A2(A1, row_id*M3, next_k*K2);
-    shared_tile<M3,K3> next_A3(A_shared[row_id][next_stage]);
-    next_A3.copy4<nthreads/M3_warps>(next_A2, 0, 0, c_id);
-
-    asm("cp.async.commit_group;");
   }
 
   /* write final result */
