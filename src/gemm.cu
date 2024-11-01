@@ -154,8 +154,8 @@ union register_vector {
   template<int R1, int C1, int L1>
   __device__ void load(const shared_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
-    for (int i = 0; i < N; ++i) {
-      x[i] = o.x[i0 + j0*L1 + i*S];
+    for (int i = 0; i < N*S; i += S) {
+      x[i] = o.x[i0 + j0*L1 + i];
     }
   }
 
@@ -587,11 +587,11 @@ int main(int argc, char** argv) {
   std::printf("| -----: | -----: | -----: | ----------: | ----------: | --------------: | --------------: | -----: | :-------: |\n");
 
   /* run tests and report */
-  run_test.template operator()<2048,2048,2048,10000,100>();
-  run_test.template operator()<4096,4096,4096,10000,100>();
-  run_test.template operator()<8192,8192,8192,1000,100>();
-  run_test.template operator()<16384,16384,16384,1000,100>();
-  run_test.template operator()<32768,32768,32768,10,1>();
+  // run_test.template operator()<2048,2048,2048,10000,100>();
+  // run_test.template operator()<4096,4096,4096,10000,100>();
+  // run_test.template operator()<8192,8192,8192,1000,100>();
+  run_test.template operator()<16384,16384,16384,1,0>();
+  // run_test.template operator()<32768,32768,32768,10,1>();
 
   return 0;
 }
