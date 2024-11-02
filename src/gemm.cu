@@ -380,15 +380,17 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   global_tile<K1,N1,K0> B1(B0, 0, b_j*N1 + col_id*N3);
 
   /* level 3 buffers (B is transposed) */
-  __shared__ shared_tile<M3,K3> A3[M3_warps][nstages];
-  __shared__ shared_tile<N3,K3> BT3[N3_warps][nstages];
+  __shared__ shared_tile<M3,K3> A3s[M3_warps][nstages];
+  __shared__ shared_tile<N3,K3> BT3s[N3_warps][nstages];
+  shared_tile<M3,K3>* A3 = A3s[row_id];
+  shared_tile<N3,K3>* BT3 = BT3s[col_id];
 
   /* start pipeline */
   const int r_id = t_id + row_id*wsize;
   const int c_id = t_id + col_id*wsize;
   for (int stage = 0; stage < nstages - 1; ++stage) {
-    BT3[col_id][stage].copy_transpose<nthreads/N3_warps>(B1, stage*K2, 0, r_id);
-    A3[row_id][stage].copy4<nthreads/M3_warps>(A1, 0, stage*K2, c_id);
+    BT3[stage].copy_transpose<nthreads/N3_warps>(B1, stage*K2, 0, r_id);
+    A3[stage].copy4<nthreads/M3_warps>(A1, 0, stage*K2, c_id);
     asm("cp.async.commit_group;");
   }
 
@@ -409,15 +411,15 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
 
     int stage = k2%nstages;
     for (int k4 = 0; k4 < K3/K4; ++k4) {
-      a4.load4(A3[row_id][stage], i4, k4*K4);
-      b4.load4(BT3[col_id][stage], j4, k4*K4);
+      a4.load4(A3[stage], i4, k4*K4);
+      b4.load4(BT3[stage], j4, k4*K4);
       C4.add_outer(a4, b4);
     }
 
     int next_stage = (k2 + (nstages - 1))%nstages;
     int next_k = (k2 + (nstages - 1))%(K1/K2);
-    BT3[col_id][next_stage].copy_transpose<nthreads/N3_warps>(B1, next_k*K2, 0, r_id);
-    A3[row_id][next_stage].copy4<nthreads/M3_warps>(A1, 0, next_k*K2, c_id);
+    BT3[next_stage].copy_transpose<nthreads/N3_warps>(B1, next_k*K2, 0, r_id);
+    A3[next_stage].copy4<nthreads/M3_warps>(A1, 0, next_k*K2, c_id);
     asm("cp.async.commit_group;");
   }
 
@@ -592,10 +594,10 @@ int main(int argc, char** argv) {
   std::printf("| -----: | -----: | -----: | ----------: | ----------: | --------------: | --------------: | -----: | :-------: |\n");
 
   // /* run tests and report */
-  run_test.template operator()<2048,2048,2048,1000,10>();
-  run_test.template operator()<4096,4096,4096,1000,10>();
-  run_test.template operator()<8192,8192,8192,100,10>();
-  run_test.template operator()<16384,16384,16384,100,10>();
+  // run_test.template operator()<2048,2048,2048,1000,10>();
+  // run_test.template operator()<4096,4096,4096,1000,10>();
+  // run_test.template operator()<8192,8192,8192,100,10>();
+  run_test.template operator()<16384,16384,16384,1,0>();
   // run_test.template operator()<32768,32768,32768,10,1>();
 
   return 0;
