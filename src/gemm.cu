@@ -204,6 +204,38 @@ union register_vector {
     }
   }
 
+  /**
+   * Cooperative load from a shared memory tile using warp shuffle, batch
+   * version.
+   * 
+   * @tparam T Number of threads in the group.
+   */
+  template<int T, int R1, int C1, int L1>
+  requires (T == 8)
+  __device__ void load4_batch(const shared32_tile<R1,C1,L1>& o, const int i0,
+      const int j0, const int t_id) {
+    for (int i = 0; i < N/4; ++i) {
+      x4[i] = o.load4(i0 + i*S, j0);
+    }
+  }
+
+  /**
+   * Cooperative load from a shared memory tile using warp shuffle, stride
+   * version.
+   * 
+   * @tparam T Number of threads in the group.
+   */
+  template<int T, int R1, int C1, int L1>
+  requires (T == 4)
+  __device__ void load4_stride(const shared32_tile<R1,C1,L1>& o, const int i0,
+      const int j0, const int t_id) {
+    for (int i = 0; i < N/4; ++i) {
+      x4[i] = o.load4(i0 + i*S, j0);
+    }
+  }
+
+  
+
   float x[N];
   float4 x4[N/4];
 };
@@ -446,8 +478,8 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     shared32_tile<M3,K3> A3s(A3[stage]);
     shared32_tile<N3,K3> BT3s(BT3[stage]);
     for (int k4 = 0; k4 < K3; k4 += K4) {
-      a4.load4(A3s, i4, k4);
-      b4.load4(BT3s, j4, k4);
+      a4.load4_stride<N4_threads>(A3s, i4, k4, j4);
+      b4.load4_batch<M4_threads>(BT3s, j4, k4, i4);
       C4.add_outer(a4, b4);
     }
 
