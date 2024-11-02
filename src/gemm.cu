@@ -205,6 +205,55 @@ union register_vector {
   }
 
   /**
+   * Cooperative load from a shared memory tile using warp shuffle, stride
+   * version.
+   */
+  template<int T, int R1, int C1, int L1>
+  requires (T == 4)
+  __device__ void load4_stride(const shared32_tile<R1,C1,L1>& o, const int i0,
+      const int j0, const int t_id) {
+    float a = o.load(t_id, j0);
+    float b = o.load(t_id + 32, j0);
+    x4[0].x = __shfl_sync(0xffffffff, a, 4*i0 + 0);
+    x4[0].y = __shfl_sync(0xffffffff, a, 4*i0 + 1);
+    x4[0].z = __shfl_sync(0xffffffff, a, 4*i0 + 2);
+    x4[0].w = __shfl_sync(0xffffffff, a, 4*i0 + 3);
+    x4[1].x = __shfl_sync(0xffffffff, b, 4*i0 + 0);
+    x4[1].y = __shfl_sync(0xffffffff, b, 4*i0 + 1);
+    x4[1].z = __shfl_sync(0xffffffff, b, 4*i0 + 2);
+    x4[1].w = __shfl_sync(0xffffffff, b, 4*i0 + 3);
+
+    // int i1 = t_id/16;
+    // int i2 = ((t_id + 16)%32)/16;
+    // x4[i1] = o.load4(i0 + i1*S, j0);
+    // x4[i2] = o.load4(i0 + i2*S, j0);
+
+    // int i1 = 0;
+    // int i2 = 1;
+    // x4[i1] = o.load4(i0 + i1*S, j0);
+    // x4[i2] = o.load4(i0 + i2*S, j0);
+
+    // int i1 = t_id/16;
+    // int srcLane = (t_id + 16)%32;    
+    // int i2 = srcLane/16;
+    // x4[i1] = o.load4(i0 + i1*S, j0);
+    // x4[i2].x = __shfl_sync(0xffffffff, x4[i1].x, srcLane);
+    // x4[i2].y = __shfl_sync(0xffffffff, x4[i1].y, srcLane);
+    // x4[i2].z = __shfl_sync(0xffffffff, x4[i1].z, srcLane);
+    // x4[i2].w = __shfl_sync(0xffffffff, x4[i1].w, srcLane);
+
+    // for (int i = 0; i < N/4; ++i) {
+    //   int srcLane = t_id%16 + 16*i;
+    //   x4[i].x = __shfl_sync(mask, x4[i].x, srcLane);
+    //   x4[i].y = __shfl_sync(mask, x4[i].y, srcLane);
+    //   x4[i].z = __shfl_sync(mask, x4[i].z, srcLane);
+    //   x4[i].w = __shfl_sync(mask, x4[i].w, srcLane);
+    // }
+
+    // load4(o, i0, j0);
+  }
+
+  /**
    * Cooperative load from a shared memory tile using warp shuffle, batch
    * version.
    * 
@@ -218,23 +267,6 @@ union register_vector {
       x4[i] = o.load4(i0 + i*S, j0);
     }
   }
-
-  /**
-   * Cooperative load from a shared memory tile using warp shuffle, stride
-   * version.
-   * 
-   * @tparam T Number of threads in the group.
-   */
-  template<int T, int R1, int C1, int L1>
-  requires (T == 4)
-  __device__ void load4_stride(const shared32_tile<R1,C1,L1>& o, const int i0,
-      const int j0, const int t_id) {
-    for (int i = 0; i < N/4; ++i) {
-      x4[i] = o.load4(i0 + i*S, j0);
-    }
-  }
-
-  
 
   float x[N];
   float4 x4[N/4];
@@ -460,8 +492,6 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   }
 
   /* level 4 tiles */
-  register_vector<M4,M4_threads> a4;
-  register_vector<N4,N4_threads> b4;
   register_tile<M4,N4,M4_threads,N4_threads> C4;
 
   /* level 4 offsets to first elements */
@@ -477,9 +507,13 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     int stage = (k2/K2)%nstages;
     shared32_tile<M3,K3> A3s(A3[stage]);
     shared32_tile<N3,K3> BT3s(BT3[stage]);
+    
+    #pragma unroll
     for (int k4 = 0; k4 < K3; k4 += K4) {
-      a4.load4_stride<N4_threads>(A3s, i4, k4, j4);
-      b4.load4_batch<M4_threads>(BT3s, j4, k4, i4);
+      register_vector<M4,M4_threads> a4;
+      a4.load4_stride<N4_threads>(A3s, i4, k4, t_id);
+      register_vector<N4,N4_threads> b4;
+      b4.load4(BT3s, j4, k4);
       C4.add_outer(a4, b4);
     }
 
