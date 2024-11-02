@@ -141,6 +141,39 @@ union shared_tile {
 };
 
 /**
+ * Matrix tile in shared memory with precomputed 32-bit shared index.
+ * 
+ * @tparam R Number of rows.
+ * @tparam C Number of columns.
+ * @tparam L Stride between columns.
+ */
+template<int R, int C, int L = R>
+requires (R%4 == 0 && L >= R)
+union shared32_tile {
+  __device__ shared32_tile(const shared_tile<R,C,L>& o) :
+      addr(__cvta_generic_to_shared(o.x)) {
+    //
+  }
+
+  __device__ float load(const int i, const int j) const {
+    float y;
+    int a = addr + (i + j*L)*sizeof(float);
+    asm("ld.shared.f32 %0, [%1];" : "=f"(y) : "r"(a));
+    return y;
+  }
+
+  __device__ float4 load4(const int i, const int j) const {
+    float4 y;
+    int a = addr + (i + j*(L/4))*sizeof(float4);
+    asm("ld.shared.v4.f32 {%0, %1, %2, %3}, [%4];" :
+        "=f"(y.x), "=f"(y.y), "=f"(y.z), "=f"(y.w) : "r"(a));
+    return y;
+  }
+
+  int addr;
+};
+
+/**
  * Vector tile in registers.
  * 
  * @tparam N Size.
@@ -152,10 +185,10 @@ union register_vector {
    * Load from a shared memory tile.
    */
   template<int R1, int C1, int L1>
-  __device__ void load(const shared_tile<R1,C1,L1>& o, const int i0,
+  __device__ void load(const shared32_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
     for (int i = 0; i < N; ++i) {
-      x[i] = o.x[i0 + j0*L1 + i*S];
+      x[i] = o.load(i0 + i*S, j0);
     }
   }
 
@@ -164,10 +197,10 @@ union register_vector {
    */
   template<int R1, int C1, int L1>
   requires (N%4 == 0 && L1%4 == 0)
-  __device__ void load4(const shared_tile<R1,C1,L1>& o, const int i0,
+  __device__ void load4(const shared32_tile<R1,C1,L1>& o, const int i0,
       const int j0) {
     for (int i = 0; i < N/4; ++i) {
-      x4[i] = o.x4[i0 + j0*(L1/4) + i*S];
+      x4[i] = o.load4(i0 + i*S, j0);
     }
   }
 
@@ -410,9 +443,11 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     asm("barrier.sync.aligned %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
 
     int stage = (k2/K2)%nstages;
+    shared32_tile<M3,K3> A3s(A3[stage]);
+    shared32_tile<N3,K3> BT3s(BT3[stage]);
     for (int k4 = 0; k4 < K3; k4 += K4) {
-      a4.load4(A3[stage], i4, k4);
-      b4.load4(BT3[stage], j4, k4);
+      a4.load4(A3s, i4, k4);
+      b4.load4(BT3s, j4, k4);
       C4.add_outer(a4, b4);
     }
 
