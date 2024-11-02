@@ -404,22 +404,22 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   const int j4 = t_id/M4_threads;
 
   /* multiply */
-  for (int k2 = 0; k2 < K1/K2; ++k2) {
+  for (int k2 = 0; k2 < K1; k2 += K2) {
     asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
     asm("barrier.sync.aligned %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
     asm("barrier.sync.aligned %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
 
-    int stage = k2%nstages;
-    for (int k4 = 0; k4 < K3/K4; ++k4) {
-      a4.load4(A3[stage], i4, k4*K4);
-      b4.load4(BT3[stage], j4, k4*K4);
+    int stage = (k2/K2)%nstages;
+    for (int k4 = 0; k4 < K3; k4 += K4) {
+      a4.load4(A3[stage], i4, k4);
+      b4.load4(BT3[stage], j4, k4);
       C4.add_outer(a4, b4);
     }
 
-    int next_stage = (k2 + (nstages - 1))%nstages;
-    int next_k = (k2 + (nstages - 1))%(K1/K2);
-    BT3[next_stage].copy_transpose<nthreads/N3_warps>(B1, next_k*K2, 0, r_id);
-    A3[next_stage].copy4<nthreads/M3_warps>(A1, 0, next_k*K2, c_id);
+    int next_stage = (k2/K2 + (nstages - 1))%nstages;
+    int next_k = (k2 + K2*(nstages - 1))%K1;
+    BT3[next_stage].copy_transpose<nthreads/N3_warps>(B1, next_k, 0, r_id);
+    A3[next_stage].copy4<nthreads/M3_warps>(A1, 0, next_k, c_id);
     asm("cp.async.commit_group;");
   }
 
