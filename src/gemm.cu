@@ -421,10 +421,12 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   /* start pipeline */
   const int r_id = t_id + row_id*wsize;
   const int c_id = t_id + col_id*wsize;
-  for (int stage = 0; stage < nstages - 1; ++stage) {
+  BT3[0].copy_transpose<nthreads/N3_warps>(B1, 0, 0, r_id);
+  A3[0].copy4<nthreads/M3_warps>(A1, 0, 0, c_id);
+  for (int stage = 1; stage < nstages - 1; ++stage) {
+    asm("cp.async.commit_group;");
     BT3[stage].copy_transpose<nthreads/N3_warps>(B1, stage*K2, 0, r_id);
     A3[stage].copy4<nthreads/M3_warps>(A1, 0, stage*K2, c_id);
-    asm("cp.async.commit_group;");
   }
 
   /* level 4 tiles */
@@ -438,7 +440,7 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
 
   /* multiply */
   for (int k2 = 0; k2 < K1; k2 += K2) {
-    asm("cp.async.wait_group %0;" :: "n"(nstages - 2));
+    asm("cp.async.wait_group %0;" :: "n"(nstages - 3));
     asm("barrier.sync.aligned %0, %1;" :: "r"(col_barrier), "n"(nthreads/N3_warps));
     asm("barrier.sync.aligned %0, %1;" :: "r"(row_barrier), "n"(nthreads/M3_warps));
 
@@ -451,11 +453,11 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
       C4.add_outer(a4, b4);
     }
 
+    asm("cp.async.commit_group;");
     int next_stage = (k2/K2 + (nstages - 1))%nstages;
     int next_k = (k2 + K2*(nstages - 1))%K1;
     BT3[next_stage].copy_transpose<nthreads/N3_warps>(B1, next_k, 0, r_id);
     A3[next_stage].copy4<nthreads/M3_warps>(A1, 0, next_k, c_id);
-    asm("cp.async.commit_group;");
   }
 
   /* write final result */
@@ -629,11 +631,11 @@ int main(int argc, char** argv) {
   std::printf("| -----: | -----: | -----: | ----------: | ----------: | --------------: | --------------: | -----: | :-------: |\n");
 
   // /* run tests and report */
-  // run_test.template operator()<2048,2048,2048,1000,10>();
-  // run_test.template operator()<4096,4096,4096,1000,10>();
-  // run_test.template operator()<8192,8192,8192,100,10>();
-  run_test.template operator()<16384,16384,16384,1,0>();
-  // run_test.template operator()<32768,32768,32768,10,1>();
+  run_test.template operator()<2048,2048,2048,1000,10>();
+  run_test.template operator()<4096,4096,4096,1000,10>();
+  run_test.template operator()<8192,8192,8192,100,10>();
+  run_test.template operator()<16384,16384,16384,100,10>();
+  run_test.template operator()<32768,32768,32768,10,1>();
 
   return 0;
 }
