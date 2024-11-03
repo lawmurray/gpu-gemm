@@ -157,14 +157,14 @@ union shared32_tile {
 
   __device__ float load(const int i, const int j) const {
     float y;
-    int a = addr + (i + j*L)*sizeof(float);
+    int a = addr + i*sizeof(float) + j*(L*sizeof(float));
     asm("ld.shared.f32 %0, [%1];" : "=f"(y) : "r"(a));
     return y;
   }
 
   __device__ float4 load4(const int i, const int j) const {
     float4 y;
-    int a = addr + (i + j*(L/4))*sizeof(float4);
+    int a = addr + i*sizeof(float4) + j*(L/4*sizeof(float4));
     asm("ld.shared.v4.f32 {%0, %1, %2, %3}, [%4];" :
         "=f"(y.x), "=f"(y.y), "=f"(y.z), "=f"(y.w) : "r"(a));
     return y;
@@ -630,7 +630,7 @@ int main(int argc, char** argv) {
   std::printf("|      M |      N |      K | cublas (ms) | custom (ms) | cublas (tflops) | custom (tflops) | trials |       err |\n");
   std::printf("| -----: | -----: | -----: | ----------: | ----------: | --------------: | --------------: | -----: | :-------: |\n");
 
-  // /* run tests and report */
+  /* run tests and report */
   run_test.template operator()<2048,2048,2048,1000,10>();
   run_test.template operator()<4096,4096,4096,1000,10>();
   run_test.template operator()<8192,8192,8192,100,10>();
