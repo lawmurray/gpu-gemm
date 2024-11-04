@@ -505,8 +505,8 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
     shared32_tile<M3,K3> A3s(A3[stage]);
     shared32_tile<N3,K3> BT3s(BT3[stage]);
     for (int k4 = 0; k4 < K3; k4 += K4) {
-      a4.load4(A3s, i4, k4);
       b4.load4(BT3s, j4, k4);
+      a4.load4(A3s, i4, k4);
       C4.add_outer(a4, b4);
     }
 
