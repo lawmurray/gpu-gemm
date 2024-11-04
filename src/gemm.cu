@@ -104,7 +104,7 @@ union shared_tile {
       int i = t_id%(R/4);
       int j = t_id/(R/4) + s*(T/(R/4));
       int dst = dst0 + (i + j*(L/4))*sizeof(float4);
-      const float4* src = &o.x4[i0 + i + (j0 + j)*(L1/4)];
+      const float4* src = o.x4 + (i0 + i + (j0 + j)*(L1/4));
       asm("cp.async.cg.shared.global [%0], [%1], %2;" :: "r"(dst),
           "l"(src), "n"(sizeof(float4)));
     }
@@ -130,7 +130,7 @@ union shared_tile {
       int i = t_id%C;
       int j = t_id/C + s*(T/C);
       int dst = dst0 + (j + i*L)*sizeof(float);
-      const float* src = &o.x[i0 + i + (j0 + j)*L1];
+      const float* src = o.x + (i0 + i + (j0 + j)*L1);
       asm("cp.async.ca.shared.global.L2::256B [%0], [%1], %2;" :: "r"(dst),
           "l"(src), "n"(sizeof(float)));
     }
@@ -265,6 +265,51 @@ union register_tile {
         x[i + j*R] += a.x[i]*b.x[j];
       }
     }
+
+    // /* finish the first column */
+    // #pragma unroll
+    // for (int j = 0; j < 4; ++j) {
+    //   #pragma unroll
+    //   for (int i = 0; i < R; ++i) {
+    //     x[i + j*R] += a.x[i]*b.x[j];
+    //   }
+    // }
+
+    // /* finish the first row */
+    // #pragma unroll
+    // for (int j = 4; j < C; ++j) {
+    //   #pragma unroll
+    //   for (int i = 0; i < 4; ++i) {
+    //     x[i + j*R] += a.x[i]*b.x[j];
+    //   }
+    // }
+
+    // /* finish the rest */
+    // #pragma unroll
+    // for (int j = 4; j < C; ++j) {
+    //   #pragma unroll
+    //   for (int i = 4; i < R; ++i) {
+    //     x[i + j*R] += a.x[i]*b.x[j];
+    //   }
+    // }
+
+    // #pragma unroll
+    // for (int j = 0; j < C; j += 4) {
+    //   #pragma unroll
+    //   for (int i = 0; i < R; i += 2) {
+    //     x[i + 0 + (j + 1)*R] += a.x[i + 0]*b.x[j + 1];
+    //     x[i + 1 + (j + 1)*R] += a.x[i + 1]*b.x[j + 1];
+    //     x[i + 1 + (j + 0)*R] += a.x[i + 1]*b.x[j + 0];
+    //     x[i + 0 + (j + 0)*R] += a.x[i + 0]*b.x[j + 0];
+    //   }
+    //   #pragma unroll
+    //   for (int i = R - 2; i >= 0; i -= 2) {
+    //     x[i + 0 + (j + 3)*R] += a.x[i + 0]*b.x[j + 3];
+    //     x[i + 1 + (j + 3)*R] += a.x[i + 1]*b.x[j + 3];
+    //     x[i + 1 + (j + 2)*R] += a.x[i + 1]*b.x[j + 2];
+    //     x[i + 0 + (j + 2)*R] += a.x[i + 0]*b.x[j + 2];
+    //   }
+    // }
   }
 
   float x[R*C]{0};
@@ -434,9 +479,21 @@ __global__ void gemm_kernel(float* __restrict__ A, float* __restrict__ B,
   register_vector<N4,N4_threads> b4;
   register_tile<M4,N4,M4_threads,N4_threads> C4;
 
-  /* level 4 offsets to first elements */
-  const int i4 = t_id%M4_threads;
-  const int j4 = t_id/M4_threads;
+  /* level 4 tile arrangement to deal with quiet shared memory bank
+   * conflicts*/
+  // static constexpr int map_i4[32] = {
+  //   0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7,
+  //   0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7
+  // };
+  // static constexpr int map_j4[32] = {
+  //   0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1,
+  //   2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3, 2, 3
+  // };
+  // const int i4 = map_i4[t_id];
+  // const int j4 = map_j4[t_id];
+
+  const int i4 = (t_id%16)/2;
+  const int j4 = (t_id/16)*2 + t_id%2;
 
   /* multiply */
   for (int k2 = 0; k2 < K1; k2 += K2) {
